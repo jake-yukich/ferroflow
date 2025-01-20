@@ -1,0 +1,23 @@
+[package]
+name = "ferroflow"
+version = "0.1.0"
+edition = "2021"
+authors = ["Jake Yukich <jake.yukich@gmail.com>"]
+description = "A deep learning framework powered by Metal"
+
+[dependencies]
+metal = "0.27.0"
+foreign-types = "0.5.0"
+objc = "0.2.7"
+cocoa-foundation = "0.1.2"
+core-foundation = "0.9.3"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "tensor_ops"
+harness = false 
