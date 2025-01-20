@@ -1,6 +1,6 @@
 # FerroFlow
 
-A deep learning framework powered by Metal GPU acceleration, written in Rust, to explore ML nuts and bolts while leveraging my Apple Silicon chip. *Work in progress.*
+A deep learning framework powered by Metal GPU acceleration, written in Rust and Metal, to explore ML nuts and bolts while leveraging my Apple Silicon chip. *Work in progress.*
 
 ## Features
 
