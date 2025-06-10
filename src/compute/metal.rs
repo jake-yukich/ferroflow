@@ -1,7 +1,8 @@
 use super::ComputeBackend;
 use crate::error::{Result, FerroFlowError};
-use metal::{self, Device, CommandQueue, Library, ComputePipelineState, Buffer};
+use metal::{self, Device, CommandQueue, Library, ComputePipelineState, Buffer, MTLResourceOptions, MTLSize};
 use std::sync::Arc;
+use std::mem::size_of;
 
 const TILE_SIZE: u32 = 16;
 
@@ -300,46 +301,71 @@ impl ComputeBackend for MetalBackend {
         transpose_a: bool,
         transpose_b: bool
     ) -> Result<Self::Buffer> {
+        let result_buffer = ctx.device.new_buffer(
+            (m * n * size_of::<f32>()) as u64,
+            MTLResourceOptions::StorageModeManaged
+        );
+        
         let command_buffer = ctx.command_queue.new_command_buffer();
-        let compute_encoder = command_buffer.new_compute_command_encoder();
-
-        // Choose between tiled and non-tiled based on matrix size
-        let pipeline = if m >= TILE_SIZE && n >= TILE_SIZE && k >= TILE_SIZE {
+        let encoder = command_buffer.new_compute_command_encoder();
+        
+        // Choose appropriate pipeline based on size and transpose flags
+        let use_tiled = m > TILE_SIZE as usize && n > TILE_SIZE as usize && k > TILE_SIZE as usize;
+        let pipeline = if use_tiled {
             &ctx.matmul_transposed_tiled_pipeline
         } else {
             &ctx.matmul_transposed_pipeline
         };
-
-        let result_buffer = ctx.device.new_buffer(
-            (m * n * std::mem::size_of::<f32>()) as u64,
-            metal::MTLResourceOptions::StorageModeShared
-        );
-
-        compute_encoder.set_compute_pipeline_state(pipeline);
-        compute_encoder.set_buffer(0, Some(a), 0);
-        compute_encoder.set_buffer(1, Some(b), 0);
-        compute_encoder.set_buffer(2, Some(&result_buffer), 0);
         
-        compute_encoder.set_bytes(3, std::mem::size_of::<u32>() as u64, &(m as u32) as *const u32 as *const _);
-        compute_encoder.set_bytes(4, std::mem::size_of::<u32>() as u64, &(n as u32) as *const u32 as *const _);
-        compute_encoder.set_bytes(5, std::mem::size_of::<u32>() as u64, &(k as u32) as *const u32 as *const _);
-        compute_encoder.set_bytes(6, std::mem::size_of::<bool>() as u64, &transpose_a as *const bool as *const _);
-        compute_encoder.set_bytes(7, std::mem::size_of::<bool>() as u64, &transpose_b as *const bool as *const _);
-
-        let grid_size = metal::MTLSize::new(n as u64, m as u64, 1);
-        let threadgroup_size = metal::MTLSize::new(
-            TILE_SIZE as u64,
-            TILE_SIZE as u64,
-            1
-        );
-
-        compute_encoder.dispatch_threads(grid_size, threadgroup_size);
-        compute_encoder.end_encoding();
+        encoder.set_compute_pipeline_state(pipeline);
+        encoder.set_buffer(0, Some(a), 0);
+        encoder.set_buffer(1, Some(b), 0);
+        encoder.set_buffer(2, Some(&result_buffer), 0);
         
+        // Set dimensions
+        encoder.set_bytes(3, size_of::<u32>() as u64, &(m as u32) as *const _ as _);
+        encoder.set_bytes(4, size_of::<u32>() as u64, &(n as u32) as *const _ as _);
+        encoder.set_bytes(5, size_of::<u32>() as u64, &(k as u32) as *const _ as _);
+        encoder.set_bytes(6, size_of::<u32>() as u64, &(transpose_a as u32) as *const _ as _);
+        encoder.set_bytes(7, size_of::<u32>() as u64, &(transpose_b as u32) as *const _ as _);
+        
+        if use_tiled {
+            let threads_per_group = MTLSize::new(TILE_SIZE as u64, TILE_SIZE as u64, 1);
+            let thread_groups = MTLSize::new(
+                ((n as u32 + TILE_SIZE - 1) / TILE_SIZE) as u64,
+                ((m as u32 + TILE_SIZE - 1) / TILE_SIZE) as u64,
+                1
+            );
+            encoder.dispatch_thread_groups(thread_groups, threads_per_group);
+        } else {
+            let grid_size = MTLSize::new(n as u64, m as u64, 1);
+            let thread_group_size = MTLSize::new(16, 16, 1);
+            encoder.dispatch_threads(grid_size, thread_group_size);
+        }
+        
+        encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
-
+        
         Ok(result_buffer)
+    }
+
+    fn matmul_transposed_batched(
+        _ctx: &Self::Context,
+        _a: &Self::Buffer,
+        _b: &Self::Buffer,
+        _batch_size: usize,
+        _m: usize,
+        _n: usize,
+        _k: usize,
+        _transpose_a: bool,
+        _transpose_b: bool
+    ) -> Result<Self::Buffer> {
+        // TODO: Implement batched transposed matmul for Metal
+        // For now, return an error since we haven't implemented batched transpose yet
+        Err(FerroFlowError::InvalidOperation(
+            "Batched transposed matrix multiplication not yet implemented for Metal backend".into()
+        ))
     }
 
     fn synchronize(ctx: &Self::Context) -> Result<()> {
