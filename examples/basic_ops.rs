@@ -1,4 +1,8 @@
-use ferroflow::{init_logging, compute::{MetalBackend, ComputeBackend}, tensor::{Tensor, Shape}};
+use ferroflow::{
+    init_logging, 
+    compute::{MetalBackend, ComputeBackend}, 
+    tensor::{Tensor, Shape}
+};
 use std::sync::Arc;
 
 fn main() {
@@ -23,4 +27,13 @@ fn main() {
     
     let c = a.add(&b).unwrap();
     println!("a + b = {:?}", c.data().unwrap());
+    
+    // Test element-wise multiplication
+    let d = a.multiply(&b).unwrap();
+    println!("a * b = {:?}", d.data().unwrap());
+    
+    // Test scalar multiplication
+    let scalar = 2.0;
+    let e = a.scalar_multiply(scalar).unwrap();
+    println!("a * {} = {:?}", scalar, e.data().unwrap());
 } 

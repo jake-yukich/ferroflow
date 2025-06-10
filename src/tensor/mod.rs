@@ -44,15 +44,24 @@ impl Shape {
     pub fn new_batched(batch: usize, rows: usize, cols: usize) -> Self {
         Self(vec![batch, rows, cols])
     }
+
+    pub fn into_dims4(&self) -> crate::error::Result<(usize, usize, usize, usize)> {
+        if self.0.len() != 4 {
+            return Err(crate::error::FerroFlowError::ShapeMismatch(
+                format!("Expected 4 dimensions, got {}", self.0.len())
+            ));
+        }
+        Ok((self.0[0], self.0[1], self.0[2], self.0[3]))
+    }
 }
 
 /// A generic tensor implementation that works with any compute backend.
 /// B: ComputeBackend ensures the backend implements all required operations.
 /// Uses Arc for thread-safe sharing of the context.
 pub struct Tensor<B: ComputeBackend> {
-    buffer: B::Buffer,
-    shape: Shape,
     ctx: Arc<B::Context>,
+    shape: Shape,
+    pub(crate) buffer: B::Buffer,  // Make buffer accessible within crate
 }
 
 impl<B: ComputeBackend> Tensor<B> {
@@ -228,6 +237,45 @@ impl<B: ComputeBackend> Tensor<B> {
             ))
         }
     }
+    
+    /// Performs matrix multiplication with optional transposition
+    pub fn matmul_transposed(&self, other: &Self, transpose_a: bool, transpose_b: bool) -> Result<Self> {
+        let (m_a, k_a) = if transpose_a {
+            (self.shape.dims()[1], self.shape.dims()[0])
+        } else {
+            (self.shape.dims()[0], self.shape.dims()[1])
+        };
+        
+        let (k_b, n_b) = if transpose_b {
+            (other.shape.dims()[1], other.shape.dims()[0])
+        } else {
+            (other.shape.dims()[0], other.shape.dims()[1])
+        };
+        
+        if k_a != k_b {
+            return Err(FerroFlowError::ShapeMismatch(
+                format!("Incompatible dimensions for matrix multiplication: {}x{} and {}x{}", 
+                    m_a, k_a, k_b, n_b)
+            ));
+        }
+        
+        let result_buffer = B::matmul_transposed(
+            &self.ctx,
+            &self.buffer,
+            &other.buffer,
+            m_a,
+            n_b,
+            k_a,
+            transpose_a,
+            transpose_b
+        )?;
+        
+        Ok(Self {
+            buffer: result_buffer,
+            shape: Shape::new(vec![m_a, n_b]),
+            ctx: Arc::clone(&self.ctx),
+        })
+    }
 
     pub fn t(&self) -> TransposedTensor<B> {
         TransposedTensor { tensor: self, transpose: true }
@@ -261,6 +309,11 @@ impl<B: ComputeBackend> Tensor<B> {
         let data: Vec<f32> = (0..size).map(|_| rng.gen()).collect();
         Self::new(ctx, shape, &data)
     }
+
+    // Add a public buffer accessor method
+    pub fn buffer(&self) -> &B::Buffer {
+        &self.buffer
+    }
 }
 
 pub struct TransposedTensor<'a, B: ComputeBackend> {
@@ -268,11 +321,42 @@ pub struct TransposedTensor<'a, B: ComputeBackend> {
     transpose: bool,
 }
 
-impl<'a, B: ComputeBackend> Mul for &TransposedTensor<'a, B> {
-    type Output = Result<Tensor<B>>;
-    
-    fn mul(self, other: &TransposedTensor<'a, B>) -> Self::Output {
-        self.tensor.matmul_transposed(other.tensor, self.transpose, other.transpose)
+impl<'a, B: ComputeBackend> std::ops::Mul for &'a TransposedTensor<'a, B> {
+    type Output = crate::error::Result<Tensor<B>>;
+
+    fn mul(self, other: &'a TransposedTensor<B>) -> Self::Output {
+        let (m, k) = if self.transpose {
+            (self.tensor.shape().dims()[1], self.tensor.shape().dims()[0])
+        } else {
+            (self.tensor.shape().dims()[0], self.tensor.shape().dims()[1])
+        };
+        
+        let (k2, n) = if other.transpose {
+            (other.tensor.shape().dims()[1], other.tensor.shape().dims()[0])
+        } else {
+            (other.tensor.shape().dims()[0], other.tensor.shape().dims()[1])
+        };
+        
+        if k != k2 {
+            return Err(crate::error::FerroFlowError::ShapeMismatch(
+                format!("Incompatible dimensions for matrix multiplication: {}x{} and {}x{}", m, k, k2, n)
+            ));
+        }
+
+        B::matmul_transposed(
+            &self.tensor.ctx,
+            &self.tensor.buffer,
+            &other.tensor.buffer,
+            m,
+            n,
+            k,
+            self.transpose,
+            other.transpose
+        ).map(|buffer| Tensor {
+            ctx: Arc::clone(&self.tensor.ctx),
+            shape: Shape::new(vec![m, n]),
+            buffer,
+        })
     }
 }
 
@@ -310,14 +394,12 @@ impl<B: ComputeBackend> TensorChain<B> {
         }
     }
     
-    pub fn transpose(self) -> Self {
-        TensorChain {
-            tensor: self.tensor.map(|t| TransposedTensor { 
-                tensor: &t, 
-                transpose: true 
-            })
-        }
-    }
+    // TODO: Implement transpose when backend support is complete
+    // pub fn transpose(self) -> Self {
+    //     TensorChain {
+    //         tensor: self.tensor.and_then(|t| t.transpose())
+    //     }
+    // }
     
     pub fn add(self, other: &Tensor<B>) -> Self {
         TensorChain {

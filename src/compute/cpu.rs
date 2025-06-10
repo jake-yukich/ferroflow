@@ -132,4 +132,85 @@ impl ComputeBackend for CPUBackend {
         
         Ok(c)
     }
+
+    fn matmul_transposed(
+        _ctx: &Self::Context,
+        a: &Self::Buffer,
+        b: &Self::Buffer,
+        m: usize,
+        n: usize,
+        k: usize,
+        transpose_a: bool,
+        transpose_b: bool
+    ) -> Result<Self::Buffer> {
+        let mut c = vec![0.0; m * n];
+        
+        for i in 0..m {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for ki in 0..k {
+                    let a_idx = if transpose_a {
+                        ki * m + i  // A is transposed, so access as A[k][i]
+                    } else {
+                        i * k + ki  // A is not transposed, access as A[i][k]
+                    };
+                    
+                    let b_idx = if transpose_b {
+                        j * k + ki  // B is transposed, so access as B[j][k]
+                    } else {
+                        ki * n + j  // B is not transposed, access as B[k][j]
+                    };
+                    
+                    sum += a[a_idx] * b[b_idx];
+                }
+                c[i * n + j] = sum;
+            }
+        }
+        
+        Ok(c)
+    }
+
+    fn matmul_transposed_batched(
+        _ctx: &Self::Context,
+        a: &Self::Buffer,
+        b: &Self::Buffer,
+        batch_size: usize,
+        m: usize,
+        n: usize,
+        k: usize,
+        transpose_a: bool,
+        transpose_b: bool
+    ) -> Result<Self::Buffer> {
+        let mut c = vec![0.0; batch_size * m * n];
+        
+        for batch in 0..batch_size {
+            let a_offset = batch * m * k;
+            let b_offset = batch * k * n;
+            let c_offset = batch * m * n;
+            
+            for i in 0..m {
+                for j in 0..n {
+                    let mut sum = 0.0;
+                    for ki in 0..k {
+                        let a_idx = if transpose_a {
+                            a_offset + ki * m + i  // A is transposed
+                        } else {
+                            a_offset + i * k + ki  // A is not transposed
+                        };
+                        
+                        let b_idx = if transpose_b {
+                            b_offset + j * k + ki  // B is transposed
+                        } else {
+                            b_offset + ki * n + j  // B is not transposed
+                        };
+                        
+                        sum += a[a_idx] * b[b_idx];
+                    }
+                    c[c_offset + i * n + j] = sum;
+                }
+            }
+        }
+        
+        Ok(c)
+    }
 } 
